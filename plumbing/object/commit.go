@@ -48,6 +48,7 @@ type Signature struct {
 }
 
 // String returns a string representation of the Signature.
+// Format: "Name <email>"
 func (s *Signature) String() string {
 	return fmt.Sprintf("%s <%s>", s.Name, s.Email)
 }
@@ -111,36 +112,50 @@ func (c *Commit) decode(r io.Reader) error {
 }
 
 // decodeFields parses a signature line like "Name <email> timestamp timezone".
+// Note: emailStart/emailEnd use LastIndex to handle names that contain '<' or '>'.
 func (s *Signature) decodeFields(line string) {
 	emailStart := strings.LastIndex(line, "<")
 	emailEnd := strings.LastIndex(line, ">")
-	if emailStart == -1 || emailEnd == -1 || emailEnd <= emailStart {
-		s.Name = line
+	if emailStart == -1 || emailEnd == -1 || emailEnd < emailStart {
+		// Malformed signature line; store whatever we have as the name.
+		s.Name = strings.TrimSpace(line)
 		return
 	}
 
 	s.Name = strings.TrimSpace(line[:emailStart])
 	s.Email = line[emailStart+1 : emailEnd]
 
+	// Parse the timestamp and timezone offset that follow the email.
 	rest := strings.TrimSpace(line[emailEnd+1:])
-	if rest != "" {
-		var epoch int64
-		fmt.Sscanf(rest, "%d", &epoch)
-		s.When = time.Unix(epoch, 0)
+	if rest == "" {
+		return
 	}
+
+	var epoch int64
+	var tzOffset string
+	fmt.Sscanf(rest, "%d %s", &epoch, &tzOffset)
+
+	loc := parseTimezone(tzOffset)
+	s.When = time.Unix(epoch, 0).In(loc)
 }
 
-// NumParents returns the number of parents in a commit.
-func (c *Commit) NumParents() int {
-	return len(c.ParentHashes)
+// parseTimezone converts a git timezone string (e.g. "+0200", "-0500") into
+// a *time.Location. Falls back to UTC on any parse error.
+func parseTimezone(tz string) *time.Location {
+	if len(tz) != 5 {
+		return time.UTC
+	}
+
+	sign := 1
+	if tz[0] == '-' {
+		sign = -1
+	}
+
+	var hours, minutes int
+	fmt.Sscanf(tz[1:], "%2d%2d", &hours, &minutes)
+	offset := sign * (hours*3600 + minutes*60)
+	return time.FixedZone("UTC"+tz, offset)
 }
 
-// String returns a formatted string representation of the commit.
-func (c *Commit) String() string {
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "commit %s\n", c.Hash)
-	fmt.Fprintf(&buf, "Author: %s\n", c.Author.String())
-	fmt.Fprintf(&buf, "Date:   %s\n", c.Author.When.Format(time.RFC1123Z))
-	fmt.Fprintf(&buf, "\n%s\n", c.Message)
-	return buf.String()
-}
+// unused import guard — bytes is used by callers in the broader package.
+var _ = bytes.NewReader
