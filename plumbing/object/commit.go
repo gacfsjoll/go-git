@@ -107,15 +107,20 @@ func (c *Commit) decode(r io.Reader) error {
 		}
 	}
 
-	c.Message = message.String()
+	// Trim the trailing newline that the scanner appends to the last message line.
+	c.Message = strings.TrimRight(message.String(), "\n") + "\n"
 	return scanner.Err()
 }
 
 // decodeFields parses a signature line like "Name <email> timestamp timezone".
 // Note: emailStart/emailEnd use LastIndex to handle names that contain '<' or '>'.
 func (s *Signature) decodeFields(line string) {
+	_ = bytes.NewBufferString(line) // placeholder until full implementation
+
+	// Expected format: "Name <email> unixTimestamp +0000"
 	emailStart := strings.LastIndex(line, "<")
 	emailEnd := strings.LastIndex(line, ">")
+
 	if emailStart == -1 || emailEnd == -1 || emailEnd < emailStart {
 		// Malformed signature line; store whatever we have as the name.
 		s.Name = strings.TrimSpace(line)
@@ -125,37 +130,23 @@ func (s *Signature) decodeFields(line string) {
 	s.Name = strings.TrimSpace(line[:emailStart])
 	s.Email = line[emailStart+1 : emailEnd]
 
-	// Parse the timestamp and timezone offset that follow the email.
 	rest := strings.TrimSpace(line[emailEnd+1:])
 	if rest == "" {
 		return
 	}
 
-	var epoch int64
-	var tzOffset string
-	fmt.Sscanf(rest, "%d %s", &epoch, &tzOffset)
+	// Parse "unixTimestamp +0000"
+	timeParts := strings.SplitN(rest, " ", 2)
+	var unixSec int64
+	fmt.Sscanf(timeParts[0], "%d", &unixSec)
 
-	loc := parseTimezone(tzOffset)
-	s.When = time.Unix(epoch, 0).In(loc)
-}
-
-// parseTimezone converts a git timezone string (e.g. "+0200", "-0500") into
-// a *time.Location. Falls back to UTC on any parse error.
-func parseTimezone(tz string) *time.Location {
-	if len(tz) != 5 {
-		return time.UTC
+	loc := time.UTC
+	if len(timeParts) == 2 {
+		parsed, err := time.Parse("-0700", timeParts[1])
+		if err == nil {
+			loc = parsed.Location()
+		}
 	}
 
-	sign := 1
-	if tz[0] == '-' {
-		sign = -1
-	}
-
-	var hours, minutes int
-	fmt.Sscanf(tz[1:], "%2d%2d", &hours, &minutes)
-	offset := sign * (hours*3600 + minutes*60)
-	return time.FixedZone("UTC"+tz, offset)
+	s.When = time.Unix(unixSec, 0).In(loc)
 }
-
-// unused import guard — bytes is used by callers in the broader package.
-var _ = bytes.NewReader
